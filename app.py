@@ -39,9 +39,41 @@ def sanitize_filename(filename):
         filename = filename[:200]
     return filename
 
+async def check_ytdlp_available():
+    """Проверяет доступность yt-dlp"""
+    try:
+        check_process = await asyncio.create_subprocess_exec(
+            "yt-dlp", "--version",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await asyncio.wait_for(check_process.wait(), timeout=5)
+        return check_process.returncode == 0
+    except (FileNotFoundError, asyncio.TimeoutError):
+        return False
+
 async def download_video(url: str, download_id: str):
     """Скачивает видео используя yt-dlp во временную папку"""
     try:
+        # Проверяем доступность yt-dlp
+        download_progress[download_id] = {
+            "status": "downloading",
+            "progress": 0,
+            "message": "Проверка yt-dlp...",
+            "filename": None,
+            "filepath": None
+        }
+        
+        if not await check_ytdlp_available():
+            download_progress[download_id] = {
+                "status": "error",
+                "progress": 0,
+                "message": "yt-dlp не найден или недоступен. Установите: pip install yt-dlp",
+                "filename": None,
+                "filepath": None
+            }
+            return
+        
         # Используем временную папку для хранения файлов на сервере
         temp_dir = Path(tempfile.gettempdir()) / "video_downloader"
         temp_dir.mkdir(exist_ok=True)
@@ -62,13 +94,7 @@ async def download_video(url: str, download_id: str):
             "--no-warnings",  # Убираем предупреждения
         ]
         
-        download_progress[download_id] = {
-            "status": "downloading",
-            "progress": 0,
-            "message": "Начинаем загрузку...",
-            "filename": None,
-            "filepath": None
-        }
+        download_progress[download_id]["message"] = "Запуск процесса..."
         
         process = await asyncio.create_subprocess_exec(
             *cmd,
@@ -81,65 +107,104 @@ async def download_video(url: str, download_id: str):
         error_lines = []
         all_output = []
         lines_read = 0
+        no_output_timeout = 30  # Таймаут 30 секунд без вывода
         
         # Обновляем сообщение о начале работы
         download_progress[download_id]["message"] = "Инициализация загрузки..."
+        start_time = asyncio.get_event_loop().time()
+        last_output_time = start_time
         
-        # Читаем вывод процесса
+        # Читаем вывод процесса с таймаутом
         while True:
-            line = await process.stdout.readline()
-            if not line:
-                break
-            
-            line_str = line.decode('utf-8', errors='ignore').strip()
-            if line_str:
-                all_output.append(line_str)
-                lines_read += 1
+            try:
+                # Читаем строку с таймаутом
+                line = await asyncio.wait_for(process.stdout.readline(), timeout=5.0)
+                if not line:
+                    # Проверяем, завершился ли процесс
+                    if process.returncode is not None:
+                        break
+                    # Если нет вывода долгое время, проверяем таймаут
+                    current_time = asyncio.get_event_loop().time()
+                    if current_time - last_output_time > no_output_timeout:
+                        download_progress[download_id] = {
+                            "status": "error",
+                            "progress": last_progress,
+                            "message": f"Таймаут: процесс не выводит данные более {no_output_timeout} секунд",
+                            "filename": None,
+                            "filepath": None
+                        }
+                        process.kill()
+                        return
+                    continue
                 
-                # Если это первая строка, обновляем сообщение
-                if lines_read == 1:
-                    download_progress[download_id]["message"] = f"Запуск: {line_str[:60]}"
-            
-            # Парсим прогресс из вывода yt-dlp
-            if "[download]" in line_str:
-                # Ищем процент прогресса (формат: [download] 45.2% of 123.45MiB)
-                progress_match = re.search(r'(\d+\.?\d*)%', line_str)
-                if progress_match:
-                    progress = float(progress_match.group(1))
-                    last_progress = progress
-                    download_progress[download_id]["progress"] = progress
+                last_output_time = asyncio.get_event_loop().time()
+                
+                # Обрабатываем прочитанную строку
+                line_str = line.decode('utf-8', errors='ignore').strip()
+                if line_str:
+                    all_output.append(line_str)
+                    lines_read += 1
                     
-                    # Извлекаем размер файла если есть
-                    size_match = re.search(r'of\s+([\d.]+[KMGT]?i?B)', line_str, re.IGNORECASE)
-                    if size_match:
-                        download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}% ({size_match.group(1)})"
-                    else:
-                        download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}%"
-                
-                # Ищем имя файла
-                if "Destination:" in line_str:
-                    filename_match = re.search(r'Destination:\s*(.+)', line_str)
-                    if filename_match:
-                        filename = filename_match.group(1).strip()
-                elif "has already been downloaded" in line_str:
-                    # Извлекаем имя файла из сообщения
-                    filename_match = re.search(r'\[download\]\s*(.+\.mp4)', line_str)
-                    if filename_match:
-                        filename = filename_match.group(1).strip()
-            elif "[Merger]" in line_str:
-                download_progress[download_id]["message"] = "Объединение видео и аудио..."
-            elif "[ExtractAudio]" in line_str:
-                download_progress[download_id]["message"] = "Обработка аудио..."
-            elif "ERROR" in line_str.upper() or "error" in line_str.lower():
-                error_lines.append(line_str)
-                download_progress[download_id]["message"] = f"Ошибка: {line_str[:100]}"
-            elif "WARNING" in line_str.upper():
-                # Логируем предупреждения, но продолжаем
-                pass
-            elif line_str and not any(x in line_str for x in ["[download]", "[Merger]", "[ExtractAudio]", "WARNING"]):
-                # Если это информационное сообщение, обновляем статус
-                if "Extracting" in line_str or "Downloading" in line_str or "Merging" in line_str:
-                    download_progress[download_id]["message"] = line_str[:80]
+                    # Если это первая строка, обновляем сообщение
+                    if lines_read == 1:
+                        download_progress[download_id]["message"] = f"Запуск: {line_str[:60]}"
+                    elif lines_read <= 3:
+                        # Показываем первые несколько строк для диагностики
+                        download_progress[download_id]["message"] = f"Инициализация: {line_str[:60]}"
+                    
+                        # Ищем процент прогресса (формат: [download] 45.2% of 123.45MiB)
+                        progress_match = re.search(r'(\d+\.?\d*)%', line_str)
+                        if progress_match:
+                            progress = float(progress_match.group(1))
+                            last_progress = progress
+                            download_progress[download_id]["progress"] = progress
+                            
+                            # Извлекаем размер файла если есть
+                            size_match = re.search(r'of\s+([\d.]+[KMGT]?i?B)', line_str, re.IGNORECASE)
+                            if size_match:
+                                download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}% ({size_match.group(1)})"
+                            else:
+                                download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}%"
+                        
+                        # Ищем имя файла
+                        if "Destination:" in line_str:
+                            filename_match = re.search(r'Destination:\s*(.+)', line_str)
+                            if filename_match:
+                                filename = filename_match.group(1).strip()
+                        elif "has already been downloaded" in line_str:
+                            # Извлекаем имя файла из сообщения
+                            filename_match = re.search(r'\[download\]\s*(.+\.mp4)', line_str)
+                            if filename_match:
+                                filename = filename_match.group(1).strip()
+                    elif "[Merger]" in line_str:
+                        download_progress[download_id]["message"] = "Объединение видео и аудио..."
+                    elif "[ExtractAudio]" in line_str:
+                        download_progress[download_id]["message"] = "Обработка аудио..."
+                    elif "ERROR" in line_str.upper() or "error" in line_str.lower():
+                        error_lines.append(line_str)
+                        download_progress[download_id]["message"] = f"Ошибка: {line_str[:100]}"
+                    elif "WARNING" in line_str.upper():
+                        # Логируем предупреждения, но продолжаем
+                        pass
+                    elif not any(x in line_str for x in ["[download]", "[Merger]", "[ExtractAudio]", "WARNING"]):
+                        # Если это информационное сообщение, обновляем статус
+                        if "Extracting" in line_str or "Downloading" in line_str or "Merging" in line_str:
+                            download_progress[download_id]["message"] = line_str[:80]
+            except asyncio.TimeoutError:
+                # Проверяем, не завис ли процесс
+                current_time = asyncio.get_event_loop().time()
+                if current_time - last_output_time > no_output_timeout:
+                    download_progress[download_id] = {
+                        "status": "error",
+                        "progress": last_progress,
+                        "message": f"Таймаут: процесс не отвечает более {no_output_timeout} секунд",
+                        "filename": None,
+                        "filepath": None
+                    }
+                    process.kill()
+                    return
+                # Продолжаем ждать
+                continue
         
         # Ждем завершения процесса
         returncode = await process.wait()
