@@ -87,11 +87,11 @@ async def download_video(url: str, download_id: str):
             url,
             "-f", "bestvideo+bestaudio/best",  # Лучшее качество
             "--merge-output-format", "mp4",     # Объединяем в mp4
-            "--recode-video", "mp4",            # Принудительно конвертируем в mp4
             "-o", output_template,
             "--progress",  # Показываем прогресс
             "--newline",   # Новая строка для каждого обновления
             "--no-warnings",  # Убираем предупреждения
+            "--verbose",   # Добавляем подробный вывод для диагностики
         ]
         
         download_progress[download_id]["message"] = "Запуск процесса..."
@@ -166,14 +166,24 @@ async def download_video(url: str, download_id: str):
                             else:
                                 download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}%"
                         
-                        # Ищем имя файла
+                        # Ищем имя файла в различных форматах вывода yt-dlp
                         if "Destination:" in line_str:
                             filename_match = re.search(r'Destination:\s*(.+)', line_str)
                             if filename_match:
                                 filename = filename_match.group(1).strip()
                         elif "has already been downloaded" in line_str:
                             # Извлекаем имя файла из сообщения
-                            filename_match = re.search(r'\[download\]\s*(.+\.mp4)', line_str)
+                            filename_match = re.search(r'\[download\]\s*(.+\.(?:mp4|webm|mkv|m4a))', line_str)
+                            if filename_match:
+                                filename = filename_match.group(1).strip()
+                        elif "Merging formats into" in line_str:
+                            # Извлекаем имя файла при объединении
+                            filename_match = re.search(r'into\s+(.+)', line_str)
+                            if filename_match:
+                                filename = filename_match.group(1).strip()
+                        elif "Writing video metadata" in line_str or "Writing metadata" in line_str:
+                            # Извлекаем имя файла из метаданных
+                            filename_match = re.search(r'to\s+(.+)', line_str)
                             if filename_match:
                                 filename = filename_match.group(1).strip()
                     elif "[Merger]" in line_str:
@@ -223,11 +233,21 @@ async def download_video(url: str, download_id: str):
         if returncode == 0:
             # Если имя файла не найдено, ищем последний созданный файл
             if not filename:
-                # Ищем последний созданный mp4 файл в временной папке с нашим download_id
-                mp4_files = list(temp_dir.glob(f"{download_id}_*.mp4"))
-                if mp4_files:
-                    # Сортируем по времени создания
-                    filename = str(max(mp4_files, key=os.path.getctime))
+                # Ищем все файлы с нашим download_id (любые расширения)
+                all_files = list(temp_dir.glob(f"{download_id}_*"))
+                # Фильтруем только файлы (не директории) и сортируем по времени создания
+                video_files = [f for f in all_files if f.is_file()]
+                if video_files:
+                    # Берем самый новый файл
+                    filename = str(max(video_files, key=os.path.getctime))
+                else:
+                    # Если не нашли по download_id, ищем все недавно созданные файлы в папке
+                    all_recent_files = [f for f in temp_dir.iterdir() if f.is_file()]
+                    if all_recent_files:
+                        # Берем самый новый файл, созданный после начала загрузки
+                        recent_files = [f for f in all_recent_files if os.path.getctime(f) >= start_time]
+                        if recent_files:
+                            filename = str(max(recent_files, key=os.path.getctime))
             
             if filename and os.path.exists(filename):
                 # Убеждаемся, что файл имеет расширение .mp4
@@ -256,10 +276,33 @@ async def download_video(url: str, download_id: str):
                     "filepath": filename  # Полный путь для скачивания
                 }
             else:
+                # Формируем детальное сообщение об ошибке
+                error_details = []
+                if not filename:
+                    error_details.append("Имя файла не было извлечено из вывода")
+                else:
+                    error_details.append(f"Файл не существует: {filename}")
+                
+                # Проверяем, какие файлы есть в папке
+                if temp_dir.exists():
+                    files_in_dir = list(temp_dir.iterdir())
+                    if files_in_dir:
+                        file_list = ", ".join([f.name for f in files_in_dir[:5]])
+                        error_details.append(f"Найдено файлов в папке: {len(files_in_dir)} ({file_list})")
+                    else:
+                        error_details.append("Папка пуста")
+                
+                # Добавляем последние строки вывода для диагностики
+                if all_output:
+                    last_lines = "\n".join(all_output[-3:])
+                    error_details.append(f"Последние строки: {last_lines[:200]}")
+                
+                error_message = "Файл не найден после загрузки. " + " | ".join(error_details)
+                
                 download_progress[download_id] = {
                     "status": "error",
                     "progress": last_progress,
-                    "message": "Файл не найден после загрузки",
+                    "message": error_message[:500],
                     "filename": None,
                     "filepath": None
                 }
