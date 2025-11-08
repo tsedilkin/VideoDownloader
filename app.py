@@ -85,13 +85,17 @@ async def download_video(url: str, download_id: str):
         cmd = [
             "yt-dlp",
             url,
-            "-f", "bestvideo+bestaudio/best",  # Лучшее качество
+            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",  # Предпочитаем mp4
             "--merge-output-format", "mp4",     # Объединяем в mp4
+            "--no-playlist",                    # Не скачивать плейлисты
+            "--no-write-info-json",             # Не сохранять JSON метаданные
+            "--no-write-thumbnail",             # Не сохранять миниатюру
+            "--no-write-description",           # Не сохранять описание
+            "--no-write-annotations",           # Не сохранять аннотации
             "-o", output_template,
             "--progress",  # Показываем прогресс
             "--newline",   # Новая строка для каждого обновления
             "--no-warnings",  # Убираем предупреждения
-            "--verbose",   # Добавляем подробный вывод для диагностики
         ]
         
         download_progress[download_id]["message"] = "Запуск процесса..."
@@ -235,8 +239,20 @@ async def download_video(url: str, download_id: str):
             if not filename:
                 # Ищем все файлы с нашим download_id (любые расширения)
                 all_files = list(temp_dir.glob(f"{download_id}_*"))
-                # Фильтруем только файлы (не директории) и сортируем по времени создания
-                video_files = [f for f in all_files if f.is_file()]
+                # Фильтруем только файлы (не директории) и исключаем маленькие/неправильные файлы
+                video_files = []
+                invalid_extensions = ['.html', '.htm', '.mhtml', '.txt', '.json', '.xml']
+                min_size = 1024 * 1024  # 1 МБ минимум
+                
+                for f in all_files:
+                    if f.is_file():
+                        # Пропускаем маленькие файлы и файлы неправильного типа
+                        if f.suffix.lower() in invalid_extensions:
+                            continue
+                        if os.path.getsize(f) < min_size:
+                            continue
+                        video_files.append(f)
+                
                 if video_files:
                     # Берем самый новый файл
                     filename = str(max(video_files, key=os.path.getctime))
@@ -244,37 +260,83 @@ async def download_video(url: str, download_id: str):
                     # Если не нашли по download_id, ищем все недавно созданные файлы в папке
                     all_recent_files = [f for f in temp_dir.iterdir() if f.is_file()]
                     if all_recent_files:
-                        # Берем самый новый файл, созданный после начала загрузки
-                        recent_files = [f for f in all_recent_files if os.path.getctime(f) >= start_time]
+                        # Фильтруем только валидные видео файлы
+                        recent_files = []
+                        for f in all_recent_files:
+                            if os.path.getctime(f) >= start_time:
+                                if f.suffix.lower() in invalid_extensions:
+                                    continue
+                                if os.path.getsize(f) < min_size:
+                                    continue
+                                recent_files.append(f)
                         if recent_files:
                             filename = str(max(recent_files, key=os.path.getctime))
             
             if filename and os.path.exists(filename):
-                # Убеждаемся, что файл имеет расширение .mp4
+                # Проверяем размер файла - видео должно быть больше 1 МБ
+                file_size = os.path.getsize(filename)
+                min_file_size = 1024 * 1024  # 1 МБ минимум
+                
+                # Проверяем, не является ли файл HTML/MHTML/текстовым
                 file_path = Path(filename)
-                if file_path.suffix.lower() != '.mp4':
-                    # Переименовываем файл в .mp4
-                    new_filename = file_path.with_suffix('.mp4')
+                file_ext = file_path.suffix.lower()
+                invalid_extensions = ['.html', '.htm', '.mhtml', '.txt', '.json', '.xml']
+                
+                if file_ext in invalid_extensions:
+                    # Это не видео файл
+                    download_progress[download_id] = {
+                        "status": "error",
+                        "progress": last_progress,
+                        "message": f"Скачан файл неправильного типа ({file_ext}). Возможно, это HTML страница вместо видео.",
+                        "filename": None,
+                        "filepath": None
+                    }
+                    # Удаляем неправильный файл
                     try:
-                        shutil.move(str(file_path), str(new_filename))
-                        filename = str(new_filename)
-                    except Exception as e:
-                        # Если не удалось переименовать, используем оригинальное имя
+                        os.remove(filename)
+                    except:
                         pass
-                
-                # Сохраняем полный путь к файлу для последующей отдачи клиенту
-                clean_filename = os.path.basename(filename)
-                # Убеждаемся, что имя файла заканчивается на .mp4
-                if not clean_filename.lower().endswith('.mp4'):
-                    clean_filename = os.path.splitext(clean_filename)[0] + '.mp4'
-                
-                download_progress[download_id] = {
-                    "status": "completed",
-                    "progress": 100,
-                    "message": "Загрузка завершена!",
-                    "filename": clean_filename,
-                    "filepath": filename  # Полный путь для скачивания
-                }
+                elif file_size < min_file_size:
+                    # Файл слишком маленький - это не видео
+                    size_mb = file_size / (1024 * 1024)
+                    download_progress[download_id] = {
+                        "status": "error",
+                        "progress": last_progress,
+                        "message": f"Скачанный файл слишком маленький ({size_mb:.2f} МБ). Это не видео файл. Возможно, скачались метаданные вместо видео.",
+                        "filename": None,
+                        "filepath": None
+                    }
+                    # Удаляем неправильный файл
+                    try:
+                        os.remove(filename)
+                    except:
+                        pass
+                else:
+                    # Файл валидный, продолжаем обработку
+                    # Убеждаемся, что файл имеет расширение .mp4
+                    if file_path.suffix.lower() not in ['.mp4', '.webm', '.mkv', '.m4v']:
+                        # Переименовываем файл в .mp4
+                        new_filename = file_path.with_suffix('.mp4')
+                        try:
+                            shutil.move(str(file_path), str(new_filename))
+                            filename = str(new_filename)
+                        except Exception as e:
+                            # Если не удалось переименовать, используем оригинальное имя
+                            pass
+                    
+                    # Сохраняем полный путь к файлу для последующей отдачи клиенту
+                    clean_filename = os.path.basename(filename)
+                    # Убеждаемся, что имя файла заканчивается на .mp4
+                    if not clean_filename.lower().endswith('.mp4'):
+                        clean_filename = os.path.splitext(clean_filename)[0] + '.mp4'
+                    
+                    download_progress[download_id] = {
+                        "status": "completed",
+                        "progress": 100,
+                        "message": f"Загрузка завершена! Размер: {file_size / (1024 * 1024):.2f} МБ",
+                        "filename": clean_filename,
+                        "filepath": filename  # Полный путь для скачивания
+                    }
             else:
                 # Формируем детальное сообщение об ошибке
                 error_details = []
