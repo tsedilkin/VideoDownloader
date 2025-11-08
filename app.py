@@ -85,7 +85,7 @@ async def download_video(url: str, download_id: str):
         cmd = [
             "yt-dlp",
             url,
-            "-f", "bestvideo+bestaudio/best",  # Лучшее видео + лучший аудио, или лучшее доступное
+            "-f", "best[ext=mp4]/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",  # Предпочитаем mp4
             "--merge-output-format", "mp4",     # Объединяем в mp4
             "--no-playlist",                    # Не скачивать плейлисты
             "--no-write-info-json",             # Не сохранять JSON метаданные
@@ -94,6 +94,8 @@ async def download_video(url: str, download_id: str):
             "--no-write-annotations",           # Не сохранять аннотации
             "--no-download-archive",            # Не использовать архив загрузок
             "--extractor-args", "youtube:player_client=android",  # Используем Android клиент для лучшей совместимости
+            "--no-part",                        # Не сохранять частичные файлы
+            "--no-mtime",                       # Не изменять время модификации
             "-o", output_template,
             "--progress",  # Показываем прогресс
             "--newline",   # Новая строка для каждого обновления
@@ -158,6 +160,11 @@ async def download_video(url: str, download_id: str):
                         # Показываем первые несколько строк для диагностики
                         download_progress[download_id]["message"] = f"Инициализация: {line_str[:60]}"
                     
+                        # Проверяем, не скачиваются ли только фрагменты (HLS/m3u8)
+                        if "frag" in line_str.lower() and ("of ~" in line_str or "ETA Unknown" in line_str):
+                            # Это фрагмент HLS потока - предупреждаем
+                            download_progress[download_id]["message"] = f"⚠️ Скачивание фрагментов HLS: {line_str[:70]}"
+                        
                         # Ищем процент прогресса (формат: [download] 45.2% of 123.45MiB)
                         progress_match = re.search(r'(\d+\.?\d*)%', line_str)
                         if progress_match:
@@ -168,7 +175,16 @@ async def download_video(url: str, download_id: str):
                             # Извлекаем размер файла если есть
                             size_match = re.search(r'of\s+([\d.]+[KMGT]?i?B)', line_str, re.IGNORECASE)
                             if size_match:
-                                download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}% ({size_match.group(1)})"
+                                size_str = size_match.group(1)
+                                # Проверяем, не слишком ли маленький файл (меньше 1 МБ)
+                                try:
+                                    size_value = float(re.search(r'([\d.]+)', size_str).group(1))
+                                    if 'KiB' in size_str and size_value < 1000:
+                                        download_progress[download_id]["message"] = f"⚠️ Внимание: маленький файл ({size_str}). Возможно, это не полное видео."
+                                    else:
+                                        download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}% ({size_str})"
+                                except:
+                                    download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}% ({size_str})"
                             else:
                                 download_progress[download_id]["message"] = f"Загрузка: {progress:.1f}%"
                         
@@ -179,7 +195,7 @@ async def download_video(url: str, download_id: str):
                                 filename = filename_match.group(1).strip()
                         elif "has already been downloaded" in line_str:
                             # Извлекаем имя файла из сообщения
-                            filename_match = re.search(r'\[download\]\s*(.+\.(?:mp4|webm|mkv|m4a))', line_str)
+                            filename_match = re.search(r'\[download\]\s*(.+\.(?:mp4|webm|mkv|m4a|m4v))', line_str)
                             if filename_match:
                                 filename = filename_match.group(1).strip()
                         elif "Merging formats into" in line_str:
@@ -192,6 +208,17 @@ async def download_video(url: str, download_id: str):
                             filename_match = re.search(r'to\s+(.+)', line_str)
                             if filename_match:
                                 filename = filename_match.group(1).strip()
+                        elif "Deleting original file" in line_str:
+                            # yt-dlp удаляет оригинальный файл после объединения
+                            # Ищем имя файла в предыдущих строках
+                            pass
+                        elif "Post-process file" in line_str or "has been downloaded" in line_str:
+                            # Извлекаем имя файла из сообщения о завершении
+                            filename_match = re.search(r'(\S+\.(?:mp4|webm|mkv|m4a|m4v))', line_str)
+                            if filename_match:
+                                potential_filename = filename_match.group(1).strip()
+                                if os.path.exists(potential_filename) or os.path.exists(os.path.join(temp_dir, potential_filename)):
+                                    filename = potential_filename if os.path.exists(potential_filename) else os.path.join(temp_dir, potential_filename)
                     elif "[Merger]" in line_str:
                         download_progress[download_id]["message"] = "Объединение видео и аудио..."
                     elif "[ExtractAudio]" in line_str:
@@ -224,6 +251,9 @@ async def download_video(url: str, download_id: str):
         
         # Ждем завершения процесса
         returncode = await process.wait()
+        
+        # Даем время файлу записаться на диск
+        await asyncio.sleep(2)
         
         # Если процесс завершился без вывода, это может быть ошибка
         if lines_read == 0 and returncode != 0:
@@ -398,7 +428,13 @@ async def download_video(url: str, download_id: str):
                 if temp_dir.exists():
                     files_in_dir = list(temp_dir.iterdir())
                     if files_in_dir:
-                        file_list = ", ".join([f.name for f in files_in_dir[:5]])
+                        file_details = []
+                        for f in files_in_dir[:10]:
+                            if f.is_file():
+                                size = os.path.getsize(f)
+                                size_str = f"{size / 1024:.1f}KB" if size < 1024*1024 else f"{size / (1024*1024):.1f}MB"
+                                file_details.append(f"{f.name} ({size_str})")
+                        file_list = ", ".join(file_details)
                         error_details.append(f"Найдено файлов в папке: {len(files_in_dir)} ({file_list})")
                     else:
                         error_details.append("Папка пуста")
