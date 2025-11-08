@@ -78,13 +78,27 @@ async def download_video(url: str, download_id: str):
         
         filename = None
         last_progress = 0
+        error_lines = []
+        all_output = []
+        lines_read = 0
         
+        # Обновляем сообщение о начале работы
+        download_progress[download_id]["message"] = "Инициализация загрузки..."
+        
+        # Читаем вывод процесса
         while True:
             line = await process.stdout.readline()
             if not line:
                 break
             
             line_str = line.decode('utf-8', errors='ignore').strip()
+            if line_str:
+                all_output.append(line_str)
+                lines_read += 1
+                
+                # Если это первая строка, обновляем сообщение
+                if lines_read == 1:
+                    download_progress[download_id]["message"] = f"Запуск: {line_str[:60]}"
             
             # Парсим прогресс из вывода yt-dlp
             if "[download]" in line_str:
@@ -116,13 +130,32 @@ async def download_video(url: str, download_id: str):
                 download_progress[download_id]["message"] = "Объединение видео и аудио..."
             elif "[ExtractAudio]" in line_str:
                 download_progress[download_id]["message"] = "Обработка аудио..."
-            elif "ERROR" in line_str or "WARNING" in line_str:
-                # Логируем ошибки, но продолжаем
+            elif "ERROR" in line_str.upper() or "error" in line_str.lower():
+                error_lines.append(line_str)
+                download_progress[download_id]["message"] = f"Ошибка: {line_str[:100]}"
+            elif "WARNING" in line_str.upper():
+                # Логируем предупреждения, но продолжаем
                 pass
+            elif line_str and not any(x in line_str for x in ["[download]", "[Merger]", "[ExtractAudio]", "WARNING"]):
+                # Если это информационное сообщение, обновляем статус
+                if "Extracting" in line_str or "Downloading" in line_str or "Merging" in line_str:
+                    download_progress[download_id]["message"] = line_str[:80]
         
-        await process.wait()
+        # Ждем завершения процесса
+        returncode = await process.wait()
         
-        if process.returncode == 0:
+        # Если процесс завершился без вывода, это может быть ошибка
+        if lines_read == 0 and returncode != 0:
+            download_progress[download_id] = {
+                "status": "error",
+                "progress": 0,
+                "message": "Процесс завершился без вывода. Возможно, yt-dlp не установлен или недоступен.",
+                "filename": None,
+                "filepath": None
+            }
+            return
+        
+        if returncode == 0:
             # Если имя файла не найдено, ищем последний созданный файл
             if not filename:
                 # Ищем последний созданный mp4 файл в временной папке с нашим download_id
@@ -167,15 +200,34 @@ async def download_video(url: str, download_id: str):
                 }
         else:
             # Читаем оставшийся вывод для ошибок
-            remaining_output = await process.stdout.read()
-            error_msg = remaining_output.decode('utf-8', errors='ignore')
-            if not error_msg:
-                error_msg = "Неизвестная ошибка при загрузке"
+            try:
+                remaining_output = await process.stdout.read()
+                error_msg = remaining_output.decode('utf-8', errors='ignore')
+            except:
+                error_msg = ""
+            
+            # Объединяем все сообщения об ошибках
+            if error_lines:
+                error_msg = "\n".join(error_lines[-5:])  # Последние 5 ошибок
+            elif error_msg:
+                error_msg = error_msg[:500]
+            else:
+                # Если нет явных ошибок, но процесс завершился с ошибкой
+                error_msg = "\n".join(all_output[-10:]) if all_output else "Неизвестная ошибка при загрузке"
+            
+            # Формируем понятное сообщение об ошибке
+            if "yt-dlp: error" in error_msg or "ERROR" in error_msg.upper():
+                # Извлекаем основную ошибку
+                error_match = re.search(r'ERROR:\s*(.+?)(?:\n|$)', error_msg, re.IGNORECASE)
+                if error_match:
+                    error_msg = error_match.group(1).strip()
+                else:
+                    error_msg = error_msg.split('\n')[0] if '\n' in error_msg else error_msg[:200]
             
             download_progress[download_id] = {
                 "status": "error",
                 "progress": last_progress,
-                "message": f"Ошибка загрузки: {error_msg[:300]}",
+                "message": f"Ошибка: {error_msg[:300]}",
                 "filename": None,
                 "filepath": None
             }
@@ -188,7 +240,17 @@ async def download_video(url: str, download_id: str):
             "filename": None,
             "filepath": None
         }
+    except asyncio.TimeoutError:
+        download_progress[download_id] = {
+            "status": "error",
+            "progress": 0,
+            "message": "Превышено время ожидания загрузки",
+            "filename": None,
+            "filepath": None
+        }
     except Exception as e:
+        import traceback
+        error_trace = traceback.format_exc()
         download_progress[download_id] = {
             "status": "error",
             "progress": 0,
