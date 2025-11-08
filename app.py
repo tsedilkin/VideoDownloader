@@ -40,13 +40,15 @@ def sanitize_filename(filename):
     return filename
 
 async def download_video(url: str, download_id: str):
-    """Скачивает видео используя yt-dlp"""
+    """Скачивает видео используя yt-dlp во временную папку"""
     try:
-        downloads_folder = get_downloads_folder()
+        # Используем временную папку для хранения файлов на сервере
+        temp_dir = Path(tempfile.gettempdir()) / "video_downloader"
+        temp_dir.mkdir(exist_ok=True)
         
         # Используем yt-dlp для скачивания
         # Он поддерживает m3u8, HLS и многие другие форматы
-        output_template = str(downloads_folder / "%(title)s.%(ext)s")
+        output_template = str(temp_dir / f"{download_id}_%(title)s.%(ext)s")
         
         cmd = [
             "yt-dlp",
@@ -63,7 +65,8 @@ async def download_video(url: str, download_id: str):
             "status": "downloading",
             "progress": 0,
             "message": "Начинаем загрузку...",
-            "filename": None
+            "filename": None,
+            "filepath": None
         }
         
         process = await asyncio.create_subprocess_exec(
@@ -121,25 +124,28 @@ async def download_video(url: str, download_id: str):
         if process.returncode == 0:
             # Если имя файла не найдено, ищем последний созданный файл
             if not filename:
-                # Ищем последний созданный mp4 файл в папке Downloads
-                mp4_files = list(downloads_folder.glob("*.mp4"))
+                # Ищем последний созданный mp4 файл в временной папке с нашим download_id
+                mp4_files = list(temp_dir.glob(f"{download_id}_*.mp4"))
                 if mp4_files:
                     # Сортируем по времени создания
                     filename = str(max(mp4_files, key=os.path.getctime))
             
             if filename and os.path.exists(filename):
+                # Сохраняем полный путь к файлу для последующей отдачи клиенту
                 download_progress[download_id] = {
                     "status": "completed",
                     "progress": 100,
                     "message": "Загрузка завершена!",
-                    "filename": os.path.basename(filename)
+                    "filename": os.path.basename(filename),
+                    "filepath": filename  # Полный путь для скачивания
                 }
             else:
                 download_progress[download_id] = {
                     "status": "error",
                     "progress": last_progress,
                     "message": "Файл не найден после загрузки",
-                    "filename": None
+                    "filename": None,
+                    "filepath": None
                 }
         else:
             # Читаем оставшийся вывод для ошибок
@@ -152,7 +158,8 @@ async def download_video(url: str, download_id: str):
                 "status": "error",
                 "progress": last_progress,
                 "message": f"Ошибка загрузки: {error_msg[:300]}",
-                "filename": None
+                "filename": None,
+                "filepath": None
             }
     
     except FileNotFoundError:
@@ -160,14 +167,16 @@ async def download_video(url: str, download_id: str):
             "status": "error",
             "progress": 0,
             "message": "yt-dlp не найден. Установите его: pip install yt-dlp",
-            "filename": None
+            "filename": None,
+            "filepath": None
         }
     except Exception as e:
         download_progress[download_id] = {
             "status": "error",
             "progress": 0,
             "message": f"Ошибка: {str(e)}",
-            "filename": None
+            "filename": None,
+            "filepath": None
         }
 
 @app.get("/")
@@ -193,6 +202,49 @@ async def get_progress(download_id: str):
         raise HTTPException(status_code=404, detail="Download ID not found")
     
     return download_progress[download_id]
+
+@app.get("/api/download-file/{download_id}")
+async def download_file(download_id: str):
+    """Отдает файл клиенту для скачивания"""
+    if download_id not in download_progress:
+        raise HTTPException(status_code=404, detail="Download ID not found")
+    
+    progress_data = download_progress[download_id]
+    
+    if progress_data["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Download not completed")
+    
+    filepath = progress_data.get("filepath")
+    if not filepath or not os.path.exists(filepath):
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    filename = progress_data.get("filename", "video.mp4")
+    
+    # Отдаем файл клиенту
+    return FileResponse(
+        filepath,
+        media_type="video/mp4",
+        filename=filename,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+@app.delete("/api/cleanup/{download_id}")
+async def cleanup_file(download_id: str):
+    """Удаляет временный файл после скачивания"""
+    if download_id not in download_progress:
+        return {"status": "not_found"}
+    
+    progress_data = download_progress[download_id]
+    filepath = progress_data.get("filepath")
+    
+    if filepath and os.path.exists(filepath):
+        try:
+            os.remove(filepath)
+            return {"status": "deleted"}
+        except Exception as e:
+            return {"status": "error", "message": str(e)}
+    
+    return {"status": "no_file"}
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

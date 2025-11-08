@@ -109,6 +109,8 @@ function startProgressPolling() {
                 progressInterval = null;
                 
                 if (data.status === 'completed') {
+                    // Автоматически скачиваем файл на компьютер клиента
+                    downloadFileToClient(currentDownloadId, data.filename);
                     showSuccess(data.filename);
                 } else {
                     showError(data.message);
@@ -205,6 +207,45 @@ function resetButton() {
     downloadBtn.querySelector('.btn-text').style.display = 'block';
     downloadBtn.querySelector('.btn-loader').style.display = 'none';
     currentDownloadId = null;
+}
+
+async function downloadFileToClient(downloadId, filename) {
+    try {
+        // Скачиваем файл с сервера
+        const response = await fetch(`/api/download-file/${downloadId}`);
+        
+        if (!response.ok) {
+            throw new Error('Ошибка при скачивании файла');
+        }
+        
+        // Получаем blob
+        const blob = await response.blob();
+        
+        // Создаем ссылку для скачивания
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename || 'video.mp4';
+        document.body.appendChild(a);
+        a.click();
+        
+        // Очищаем
+        window.URL.revokeObjectURL(url);
+        document.body.removeChild(a);
+        
+        // Удаляем файл с сервера после успешного скачивания
+        setTimeout(async () => {
+            try {
+                await fetch(`/api/cleanup/${downloadId}`, { method: 'DELETE' });
+            } catch (e) {
+                console.error('Ошибка при очистке файла на сервере:', e);
+            }
+        }, 1000);
+        
+    } catch (error) {
+        console.error('Ошибка при скачивании файла:', error);
+        showError(`Ошибка при скачивании файла: ${error.message}`);
+    }
 }
 
 // Очистка при размонтировании
