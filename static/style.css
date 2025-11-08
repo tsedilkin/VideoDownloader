@@ -339,6 +339,30 @@ body {
 .success-hint {
     font-size: 0.9rem;
     color: var(--text-secondary);
+    margin-bottom: 15px;
+}
+
+.manual-download-btn {
+    margin-top: 15px;
+    padding: 12px 24px;
+    background: linear-gradient(135deg, var(--success-color) 0%, #059669 100%);
+    border: none;
+    border-radius: 10px;
+    color: white;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+}
+
+.manual-download-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5);
+}
+
+.manual-download-btn:active {
+    transform: translateY(0);
 }
 
 .info-card {

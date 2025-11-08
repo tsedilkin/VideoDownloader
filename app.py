@@ -55,6 +55,7 @@ async def download_video(url: str, download_id: str):
             url,
             "-f", "bestvideo+bestaudio/best",  # Лучшее качество
             "--merge-output-format", "mp4",     # Объединяем в mp4
+            "--recode-video", "mp4",            # Принудительно конвертируем в mp4
             "-o", output_template,
             "--progress",  # Показываем прогресс
             "--newline",   # Новая строка для каждого обновления
@@ -131,12 +132,29 @@ async def download_video(url: str, download_id: str):
                     filename = str(max(mp4_files, key=os.path.getctime))
             
             if filename and os.path.exists(filename):
+                # Убеждаемся, что файл имеет расширение .mp4
+                file_path = Path(filename)
+                if file_path.suffix.lower() != '.mp4':
+                    # Переименовываем файл в .mp4
+                    new_filename = file_path.with_suffix('.mp4')
+                    try:
+                        shutil.move(str(file_path), str(new_filename))
+                        filename = str(new_filename)
+                    except Exception as e:
+                        # Если не удалось переименовать, используем оригинальное имя
+                        pass
+                
                 # Сохраняем полный путь к файлу для последующей отдачи клиенту
+                clean_filename = os.path.basename(filename)
+                # Убеждаемся, что имя файла заканчивается на .mp4
+                if not clean_filename.lower().endswith('.mp4'):
+                    clean_filename = os.path.splitext(clean_filename)[0] + '.mp4'
+                
                 download_progress[download_id] = {
                     "status": "completed",
                     "progress": 100,
                     "message": "Загрузка завершена!",
-                    "filename": os.path.basename(filename),
+                    "filename": clean_filename,
                     "filepath": filename  # Полный путь для скачивания
                 }
             else:
@@ -220,12 +238,19 @@ async def download_file(download_id: str):
     
     filename = progress_data.get("filename", "video.mp4")
     
-    # Отдаем файл клиенту
+    # Убеждаемся, что имя файла безопасно для заголовков
+    safe_filename = filename.replace('"', '\\"')
+    
+    # Отдаем файл клиенту с правильными заголовками для скачивания
     return FileResponse(
         filepath,
         media_type="video/mp4",
         filename=filename,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={
+            "Content-Disposition": f'attachment; filename="{safe_filename}"; filename*=UTF-8\'\'{safe_filename}',
+            "Content-Type": "video/mp4",
+            "Cache-Control": "no-cache"
+        }
     )
 
 @app.delete("/api/cleanup/{download_id}")

@@ -16,6 +16,7 @@ const detailStatus = document.getElementById('detailStatus');
 const detailProgress = document.getElementById('detailProgress');
 const errorMessage = document.getElementById('errorMessage');
 const successFilename = document.getElementById('successFilename');
+const manualDownloadBtn = document.getElementById('manualDownloadBtn');
 
 // Обработчик нажатия Enter в поле ввода
 videoUrlInput.addEventListener('keypress', (e) => {
@@ -109,9 +110,12 @@ function startProgressPolling() {
                 progressInterval = null;
                 
                 if (data.status === 'completed') {
-                    // Автоматически скачиваем файл на компьютер клиента
-                    downloadFileToClient(currentDownloadId, data.filename);
                     showSuccess(data.filename);
+                    // Пытаемся автоматически скачать файл
+                    // Если браузер блокирует, пользователь сможет нажать кнопку
+                    setTimeout(() => {
+                        downloadFileToClient(currentDownloadId, data.filename);
+                    }, 500);
                 } else {
                     showError(data.message);
                 }
@@ -194,12 +198,23 @@ function showSuccess(filename) {
     hideAllSections();
     successSection.style.display = 'block';
     successFilename.textContent = filename || 'Видео успешно скачано';
+    
+    // Показываем кнопку для ручного скачивания
+    if (currentDownloadId) {
+        manualDownloadBtn.style.display = 'block';
+        manualDownloadBtn.onclick = () => {
+            downloadFileToClient(currentDownloadId, filename);
+        };
+    } else {
+        manualDownloadBtn.style.display = 'none';
+    }
 }
 
 function hideAllSections() {
     progressSection.style.display = 'none';
     errorSection.style.display = 'none';
     successSection.style.display = 'none';
+    manualDownloadBtn.style.display = 'none';
 }
 
 function resetButton() {
@@ -211,40 +226,40 @@ function resetButton() {
 
 async function downloadFileToClient(downloadId, filename) {
     try {
-        // Скачиваем файл с сервера
-        const response = await fetch(`/api/download-file/${downloadId}`);
+        // Используем прямой редирект на URL файла для скачивания
+        // Это более надежный способ, чем blob для больших файлов
+        const downloadUrl = `/api/download-file/${downloadId}`;
         
-        if (!response.ok) {
-            throw new Error('Ошибка при скачивании файла');
-        }
-        
-        // Получаем blob
-        const blob = await response.blob();
-        
-        // Создаем ссылку для скачивания
-        const url = window.URL.createObjectURL(blob);
+        // Создаем временную ссылку и кликаем по ней для скачивания
         const a = document.createElement('a');
-        a.href = url;
+        a.href = downloadUrl;
         a.download = filename || 'video.mp4';
+        a.style.display = 'none';
         document.body.appendChild(a);
+        
+        // Кликаем по ссылке для начала скачивания
         a.click();
         
-        // Очищаем
-        window.URL.revokeObjectURL(url);
-        document.body.removeChild(a);
+        // Удаляем ссылку через небольшую задержку
+        setTimeout(() => {
+            if (document.body.contains(a)) {
+                document.body.removeChild(a);
+            }
+        }, 1000);
         
-        // Удаляем файл с сервера после успешного скачивания
+        // Удаляем файл с сервера после скачивания (с задержкой, чтобы файл успел скачаться)
         setTimeout(async () => {
             try {
                 await fetch(`/api/cleanup/${downloadId}`, { method: 'DELETE' });
             } catch (e) {
                 console.error('Ошибка при очистке файла на сервере:', e);
             }
-        }, 1000);
+        }, 10000); // Увеличиваем задержку до 10 секунд для больших файлов
         
     } catch (error) {
         console.error('Ошибка при скачивании файла:', error);
-        showError(`Ошибка при скачивании файла: ${error.message}`);
+        // Не показываем ошибку пользователю, так как есть кнопка для ручного скачивания
+        // showError(`Ошибка при скачивании файла: ${error.message}`);
     }
 }
 
