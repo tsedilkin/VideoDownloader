@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Downloader</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <div class="header">
+                <h1>🎬 Video Downloader</h1>
+                <p class="subtitle">Скачивайте видео с любых сайтов</p>
+            </div>
+            
+            <div class="input-section">
+                <div class="input-wrapper">
+                    <div class="input-container">
+                        <input 
+                            type="text" 
+                            id="videoUrl" 
+                            placeholder="Вставьте ссылку на страницу с видео..."
+                            autocomplete="off"
+                        >
+                        <button id="clearBtn" class="clear-btn" style="display: none;" title="Очистить">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <button id="downloadBtn" class="download-btn">
+                        <span class="btn-text">Скачать</span>
+                        <span class="btn-loader" style="display: none;">
+                            <svg class="spinner" viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" fill="none" stroke-dasharray="31.416" stroke-dashoffset="31.416">
+                                    <animate attributeName="stroke-dasharray" dur="2s" values="0 31.416;15.708 15.708;0 31.416;0 31.416" repeatCount="indefinite"/>
+                                    <animate attributeName="stroke-dashoffset" dur="2s" values="0;-15.708;-31.416;-31.416" repeatCount="indefinite"/>
+                                </circle>
+                            </svg>
+                        </span>
+                    </button>
+                </div>
+            </div>
+            
+            <div id="progressSection" class="progress-section" style="display: none;">
+                <div class="status-info">
+                    <div class="status-icon" id="statusIcon">⏳</div>
+                    <div class="status-text">
+                        <div class="status-message" id="statusMessage">Подготовка...</div>
+                        <div class="status-filename" id="statusFilename"></div>
+                    </div>
+                </div>
+                
+                <div class="progress-bar-wrapper">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">0%</div>
+                </div>
+                
+                <div class="progress-details">
+                    <div class="detail-item">
+                        <span class="detail-label">Статус:</span>
+                        <span class="detail-value" id="detailStatus">Ожидание...</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="detail-label">Прогресс:</span>
+                        <span class="detail-value" id="detailProgress">0%</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="errorSection" class="error-section" style="display: none;">
+                <div class="error-icon">⚠️</div>
+                <div class="error-message" id="errorMessage"></div>
+            </div>
+            
+            <div id="successSection" class="success-section" style="display: none;">
+                <div class="success-icon">✅</div>
+                <div class="success-message">
+                    <div class="success-title">Видео успешно скачано!</div>
+                    <div class="success-filename" id="successFilename"></div>
+                    <div class="success-hint">Файл сохранен в папку Downloads</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="info-card">
+            <h3>ℹ️ Информация</h3>
+            <ul>
+                <li>Поддерживаются форматы: m3u8, HLS, MP4 и другие</li>
+                <li>Видео автоматически конвертируется в MP4</li>
+                <li>Файлы сохраняются в папку Downloads</li>
+                <li>Максимальное качество загружается автоматически</li>
+            </ul>
+        </div>
+    </div>
+    
+    <script src="/static/script.js"></script>
+</body>
+</html>
+
