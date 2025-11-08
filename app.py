@@ -85,13 +85,15 @@ async def download_video(url: str, download_id: str):
         cmd = [
             "yt-dlp",
             url,
-            "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",  # Предпочитаем mp4
+            "-f", "bestvideo+bestaudio/best",  # Лучшее видео + лучший аудио, или лучшее доступное
             "--merge-output-format", "mp4",     # Объединяем в mp4
             "--no-playlist",                    # Не скачивать плейлисты
             "--no-write-info-json",             # Не сохранять JSON метаданные
             "--no-write-thumbnail",             # Не сохранять миниатюру
             "--no-write-description",           # Не сохранять описание
             "--no-write-annotations",           # Не сохранять аннотации
+            "--no-download-archive",            # Не использовать архив загрузок
+            "--extractor-args", "youtube:player_client=android",  # Используем Android клиент для лучшей совместимости
             "-o", output_template,
             "--progress",  # Показываем прогресс
             "--newline",   # Новая строка для каждого обновления
@@ -241,16 +243,35 @@ async def download_video(url: str, download_id: str):
                 all_files = list(temp_dir.glob(f"{download_id}_*"))
                 # Фильтруем только файлы (не директории) и исключаем маленькие/неправильные файлы
                 video_files = []
-                invalid_extensions = ['.html', '.htm', '.mhtml', '.txt', '.json', '.xml']
+                invalid_extensions = ['.html', '.htm', '.mhtml', '.txt', '.json', '.xml', '.webarchive']
                 min_size = 1024 * 1024  # 1 МБ минимум
                 
                 for f in all_files:
                     if f.is_file():
                         # Пропускаем маленькие файлы и файлы неправильного типа
                         if f.suffix.lower() in invalid_extensions:
+                            # Удаляем неправильные файлы
+                            try:
+                                os.remove(f)
+                            except:
+                                pass
                             continue
                         if os.path.getsize(f) < min_size:
+                            # Удаляем маленькие файлы (вероятно, метаданные)
+                            try:
+                                os.remove(f)
+                            except:
+                                pass
                             continue
+                        # Проверяем, не является ли файл HTML по содержимому
+                        try:
+                            with open(f, 'rb') as file_check:
+                                first_bytes = file_check.read(1024)
+                                if b'<!DOCTYPE' in first_bytes or b'<html' in first_bytes or b'Content-Type: multipart/related' in first_bytes:
+                                    os.remove(f)
+                                    continue
+                        except:
+                            pass
                         video_files.append(f)
                 
                 if video_files:
@@ -265,9 +286,26 @@ async def download_video(url: str, download_id: str):
                         for f in all_recent_files:
                             if os.path.getctime(f) >= start_time:
                                 if f.suffix.lower() in invalid_extensions:
+                                    try:
+                                        os.remove(f)
+                                    except:
+                                        pass
                                     continue
                                 if os.path.getsize(f) < min_size:
+                                    try:
+                                        os.remove(f)
+                                    except:
+                                        pass
                                     continue
+                                # Проверяем содержимое на HTML
+                                try:
+                                    with open(f, 'rb') as file_check:
+                                        first_bytes = file_check.read(1024)
+                                        if b'<!DOCTYPE' in first_bytes or b'<html' in first_bytes or b'Content-Type: multipart/related' in first_bytes:
+                                            os.remove(f)
+                                            continue
+                                except:
+                                    pass
                                 recent_files.append(f)
                         if recent_files:
                             filename = str(max(recent_files, key=os.path.getctime))
@@ -280,9 +318,20 @@ async def download_video(url: str, download_id: str):
                 # Проверяем, не является ли файл HTML/MHTML/текстовым
                 file_path = Path(filename)
                 file_ext = file_path.suffix.lower()
-                invalid_extensions = ['.html', '.htm', '.mhtml', '.txt', '.json', '.xml']
+                invalid_extensions = ['.html', '.htm', '.mhtml', '.txt', '.json', '.xml', '.webarchive']
                 
-                if file_ext in invalid_extensions:
+                # Также проверяем первые байты файла на HTML сигнатуру
+                is_html_file = False
+                try:
+                    with open(filename, 'rb') as f:
+                        first_bytes = f.read(1024)
+                        # Проверяем на HTML/MHTML сигнатуры
+                        if b'<!DOCTYPE' in first_bytes or b'<html' in first_bytes or b'Content-Type: multipart/related' in first_bytes:
+                            is_html_file = True
+                except:
+                    pass
+                
+                if file_ext in invalid_extensions or is_html_file:
                     # Это не видео файл
                     download_progress[download_id] = {
                         "status": "error",
